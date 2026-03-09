@@ -1,19 +1,34 @@
 import boto3
 import botocore
-from flask import Flask, Response, redirect, render_template, request
+from flask import Flask, Response, redirect, render_template, request, url_for
 
 from s3_web_browser.s3 import list_objects, parse_responses
 
 
 def register_routes(app: Flask) -> None:  # noqa:C901
+    def configured_bucket() -> str | None:
+        bucket_name = app.config.get("AWS_BUCKET")
+        if not bucket_name:
+            return None
+
+        return str(bucket_name).strip() or None
+
     @app.route("/", methods=["GET"])
-    def index() -> str:
+    def index() -> str | Response:
+        bucket_name = configured_bucket()
+        if bucket_name:
+            return redirect(url_for("view_bucket", bucket_name=bucket_name))
+
         s3 = boto3.resource("s3", **app.config["AWS_KWARGS"])
         all_buckets = s3.buckets.all()
         return render_template("index.html", buckets=all_buckets)
 
     @app.route("/buckets")
-    def buckets() -> str:
+    def buckets() -> str | Response:
+        bucket_name = configured_bucket()
+        if bucket_name:
+            return redirect(url_for("view_bucket", bucket_name=bucket_name))
+
         s3 = boto3.resource("s3", **app.config["AWS_KWARGS"])
         all_buckets = s3.buckets.all()
         return render_template("index.html", buckets=all_buckets)

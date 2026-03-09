@@ -10,6 +10,7 @@ class Config:  # noqa: D101
     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
     AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-central-1")
     AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", None)
+    AWS_BUCKET = os.getenv("AWS_BUCKET")
 
     AWS_KWARGS: ClassVar[dict[str, str | None]] = {
         "aws_access_key_id": AWS_ACCESS_KEY_ID,
