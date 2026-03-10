@@ -38,6 +38,8 @@
 <ul class="collection">
   {% for item in contents %}
   <li class="collection-item">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+      <div>
     {% if item.type == "folder" %}
     <a
       href="{{ url_for('view_bucket', bucket_name=bucket_name, path=item.name) }}">{{
@@ -47,6 +49,26 @@
       href="{{ url_for('download_file', bucket_name=bucket_name, path=item.name) }}"
       target="_blank">{{ item.name }}</a>
     {% endif %}
+      </div>
+      <div>
+    {% if item.type == "folder" %}
+    <form method="post" action="{{ url_for('delete_folder', bucket_name=bucket_name) }}"
+      style="margin: 0;"
+      onsubmit="return confirm('Delete this folder and all of its contents?');">
+      <input type="hidden" name="prefix" value="{{ item.name }}">
+      <input type="hidden" name="current_path" value="{{ path }}">
+      <button type="submit" class="btn-small red">Delete</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('delete_file', bucket_name=bucket_name) }}"
+      style="margin: 0;" onsubmit="return confirm('Delete this file?');">
+      <input type="hidden" name="key" value="{{ item.name }}">
+      <input type="hidden" name="current_path" value="{{ path }}">
+      <button type="submit" class="btn-small red">Delete</button>
+    </form>
+    {% endif %}
+      </div>
+    </div>
   </li>
   {% endfor %}
 </ul>

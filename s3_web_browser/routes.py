@@ -1,6 +1,6 @@
 import boto3
 import botocore
-from flask import Flask, Response, redirect, render_template, request, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 
 from s3_web_browser.s3 import list_objects, parse_responses
 
@@ -160,3 +160,86 @@ def register_routes(app: Flask) -> None:  # noqa:C901
             ExpiresIn=3600,
         )  # URL expires in 1 hour
         return redirect(url)
+
+    @app.route("/buckets/<bucket_name>/delete-file", methods=["POST"])
+    def delete_file(bucket_name: str) -> Response:
+        object_key = request.form.get("key", "").strip()
+        current_path = request.form.get("current_path", "")
+
+        if not object_key:
+            flash("File key is missing.", "error")
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+        try:
+            s3_client.delete_object(Bucket=bucket_name, Key=object_key)
+            flash(f"File deleted: {object_key}", "success")
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    flash("You do not have permission to delete this file.", "error")
+                case "NoSuchBucket":
+                    flash("The specified bucket does not exist.", "error")
+                case _:
+                    flash(f"An unknown error occurred: {e}", "error")
+
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+    @app.route("/buckets/<bucket_name>/delete-folder", methods=["POST"])
+    def delete_folder(bucket_name: str) -> Response:
+        prefix = request.form.get("prefix", "").strip()
+        current_path = request.form.get("current_path", "")
+
+        if not prefix:
+            flash("Folder prefix is missing.", "error")
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+        paginator = s3_client.get_paginator("list_objects_v2")
+        objects_to_delete: list[dict[str, str]] = []
+        deleted_count = 0
+        errors: list[dict] = []
+
+        try:
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    objects_to_delete.append({"Key": obj["Key"]})
+                    if len(objects_to_delete) == 1000:
+                        delete_response = s3_client.delete_objects(
+                            Bucket=bucket_name,
+                            Delete={"Objects": objects_to_delete, "Quiet": True},
+                        )
+                        deleted_count += len(delete_response.get("Deleted", []))
+                        errors.extend(delete_response.get("Errors", []))
+                        objects_to_delete = []
+
+            if objects_to_delete:
+                delete_response = s3_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={"Objects": objects_to_delete, "Quiet": True},
+                )
+                deleted_count += len(delete_response.get("Deleted", []))
+                errors.extend(delete_response.get("Errors", []))
+
+            if errors:
+                flash(
+                    f"Folder delete completed with {len(errors)} error(s); deleted {deleted_count} object(s).",
+                    "error",
+                )
+            elif deleted_count == 0:
+                flash(f"No objects found under folder: {prefix}", "info")
+            else:
+                flash(f"Folder deleted: {prefix} ({deleted_count} object(s))", "success")
+
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    flash("You do not have permission to delete this folder.", "error")
+                case "NoSuchBucket":
+                    flash("The specified bucket does not exist.", "error")
+                case _:
+                    flash(f"An unknown error occurred: {e}", "error")
+
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
