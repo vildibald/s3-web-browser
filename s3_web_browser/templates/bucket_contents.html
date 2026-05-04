@@ -35,11 +35,30 @@
 </div>
 {% endif %}
 
+<form method="post" action="{{ url_for('delete_selected', bucket_name=bucket_name) }}"
+  onsubmit="return confirmDeleteSelected(this);">
+<input type="hidden" name="current_path" value="{{ path }}">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 16px 0;">
+  <label>
+    <input type="checkbox" id="select-all-items">
+    <span>Select all</span>
+  </label>
+  <button type="submit" class="btn-small red">Delete Selected</button>
+</div>
 <ul class="collection">
   {% for item in contents %}
   <li class="collection-item">
     <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
-      <div>
+      <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+    <label>
+    {% if item.type == "folder" %}
+      <input type="checkbox" class="delete-item-checkbox" name="folder_prefixes" value="{{ item.name }}">
+    {% else %}
+      <input type="checkbox" class="delete-item-checkbox" name="file_keys" value="{{ item.name }}">
+    {% endif %}
+      <span></span>
+    </label>
+    <div style="min-width: 0; overflow-wrap: anywhere;">
     {% if item.type == "folder" %}
     <a
       href="{{ url_for('view_bucket', bucket_name=bucket_name, path=item.name) }}">{{
@@ -50,26 +69,43 @@
       target="_blank">{{ item.name }}</a>
     {% endif %}
       </div>
-      <div>
-    {% if item.type == "folder" %}
-    <form method="post" action="{{ url_for('delete_folder', bucket_name=bucket_name) }}"
-      style="margin: 0;"
-      onsubmit="return confirm('Delete this folder and all of its contents?');">
-      <input type="hidden" name="prefix" value="{{ item.name }}">
-      <input type="hidden" name="current_path" value="{{ path }}">
-      <button type="submit" class="btn-small red">Delete</button>
-    </form>
-    {% else %}
-    <form method="post" action="{{ url_for('delete_file', bucket_name=bucket_name) }}"
-      style="margin: 0;" onsubmit="return confirm('Delete this file?');">
-      <input type="hidden" name="key" value="{{ item.name }}">
-      <input type="hidden" name="current_path" value="{{ path }}">
-      <button type="submit" class="btn-small red">Delete</button>
-    </form>
-    {% endif %}
       </div>
     </div>
   </li>
   {% endfor %}
 </ul>
+</form>
+<script>
+  const selectAllItems = document.getElementById('select-all-items');
+  const deleteItemCheckboxes = [...document.querySelectorAll('.delete-item-checkbox')];
+
+  function updateSelectAllState() {
+    const selectedCount = deleteItemCheckboxes.filter((checkbox) => checkbox.checked).length;
+    selectAllItems.disabled = deleteItemCheckboxes.length === 0;
+    selectAllItems.checked = selectedCount > 0 && selectedCount === deleteItemCheckboxes.length;
+    selectAllItems.indeterminate = selectedCount > 0 && selectedCount < deleteItemCheckboxes.length;
+  }
+
+  function confirmDeleteSelected(form) {
+    const selectedCount = form.querySelectorAll('.delete-item-checkbox:checked').length;
+    if (selectedCount === 0) {
+      M.toast({ html: 'Select at least one item to delete.', classes: 'blue darken-2' });
+      return false;
+    }
+
+    return confirm(`Delete ${selectedCount} selected item(s)? Folders include all contents.`);
+  }
+
+  selectAllItems.addEventListener('change', () => {
+    deleteItemCheckboxes.forEach((checkbox) => {
+      checkbox.checked = selectAllItems.checked;
+    });
+    updateSelectAllState();
+  });
+
+  deleteItemCheckboxes.forEach((checkbox) => {
+    checkbox.addEventListener('change', updateSelectAllState);
+  });
+  updateSelectAllState();
+</script>
 {% endblock %}

@@ -5,6 +5,41 @@ from flask import Flask, Response, flash, redirect, render_template, request, ur
 from s3_web_browser.s3 import list_objects, parse_responses
 
 
+def delete_object_keys(
+    s3_client: botocore.client.BaseClient,
+    bucket_name: str,
+    object_keys: list[str],
+) -> tuple[int, list[dict[str, object]]]:
+    deleted_count = 0
+    errors: list[dict[str, object]] = []
+
+    for index in range(0, len(object_keys), 1000):
+        objects_to_delete = [{"Key": object_key} for object_key in object_keys[index : index + 1000]]
+        delete_response = s3_client.delete_objects(
+            Bucket=bucket_name,
+            Delete={"Objects": objects_to_delete},
+        )
+        deleted_count += len(delete_response.get("Deleted", []))
+        errors.extend(delete_response.get("Errors", []))
+
+    return deleted_count, errors
+
+
+def collect_folder_keys(
+    s3_client: botocore.client.BaseClient,
+    bucket_name: str,
+    prefixes: list[str],
+) -> list[str]:
+    paginator = s3_client.get_paginator("list_objects_v2")
+    object_keys: list[str] = []
+
+    for prefix in prefixes:
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            object_keys.extend(obj["Key"] for obj in page.get("Contents", []))
+
+    return object_keys
+
+
 def register_routes(app: Flask) -> None:  # noqa:C901
     def configured_bucket() -> str | None:
         bucket_name = app.config.get("AWS_BUCKET")
@@ -186,6 +221,49 @@ def register_routes(app: Flask) -> None:  # noqa:C901
 
             return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
 
+    @app.route("/buckets/<bucket_name>/delete-selected", methods=["POST"])
+    def delete_selected(bucket_name: str) -> Response:
+        file_keys = [key.strip() for key in request.form.getlist("file_keys") if key.strip()]
+        folder_prefixes = [prefix.strip() for prefix in request.form.getlist("folder_prefixes") if prefix.strip()]
+        current_path = request.form.get("current_path", "")
+
+        if not file_keys and not folder_prefixes:
+            flash("Select at least one item to delete.", "info")
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+
+        try:
+            folder_keys = collect_folder_keys(s3_client, bucket_name, folder_prefixes)
+            object_keys = list(dict.fromkeys([*file_keys, *folder_keys]))
+
+            if not object_keys:
+                flash("No objects found for the selected item(s).", "info")
+                return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+            deleted_count, errors = delete_object_keys(s3_client, bucket_name, object_keys)
+
+            if errors:
+                flash(
+                    f"Delete completed with {len(errors)} error(s); deleted {deleted_count} object(s).",
+                    "error",
+                )
+            else:
+                selected_count = len(file_keys) + len(folder_prefixes)
+                flash(f"Deleted {selected_count} selected item(s) ({deleted_count} object(s)).", "success")
+
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    flash("You do not have permission to delete the selected item(s).", "error")
+                case "NoSuchBucket":
+                    flash("The specified bucket does not exist.", "error")
+                case _:
+                    flash(f"An unknown error occurred: {e}", "error")
+
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
     @app.route("/buckets/<bucket_name>/delete-folder", methods=["POST"])
     def delete_folder(bucket_name: str) -> Response:
         prefix = request.form.get("prefix", "").strip()
@@ -196,31 +274,10 @@ def register_routes(app: Flask) -> None:  # noqa:C901
             return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
 
         s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
-        paginator = s3_client.get_paginator("list_objects_v2")
-        objects_to_delete: list[dict[str, str]] = []
-        deleted_count = 0
-        errors: list[dict] = []
 
         try:
-            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-                for obj in page.get("Contents", []):
-                    objects_to_delete.append({"Key": obj["Key"]})
-                    if len(objects_to_delete) == 1000:
-                        delete_response = s3_client.delete_objects(
-                            Bucket=bucket_name,
-                            Delete={"Objects": objects_to_delete, "Quiet": True},
-                        )
-                        deleted_count += len(delete_response.get("Deleted", []))
-                        errors.extend(delete_response.get("Errors", []))
-                        objects_to_delete = []
-
-            if objects_to_delete:
-                delete_response = s3_client.delete_objects(
-                    Bucket=bucket_name,
-                    Delete={"Objects": objects_to_delete, "Quiet": True},
-                )
-                deleted_count += len(delete_response.get("Deleted", []))
-                errors.extend(delete_response.get("Errors", []))
+            object_keys = collect_folder_keys(s3_client, bucket_name, [prefix])
+            deleted_count, errors = delete_object_keys(s3_client, bucket_name, object_keys)
 
             if errors:
                 flash(
