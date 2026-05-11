@@ -1,6 +1,6 @@
 import boto3
 import botocore
-from flask import Flask, Response, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
 
 from s3_web_browser.s3 import list_objects, parse_responses
 
@@ -195,6 +195,68 @@ def register_routes(app: Flask) -> None:  # noqa:C901
             ExpiresIn=3600,
         )  # URL expires in 1 hour
         return redirect(url)
+
+    @app.route("/api/buckets/<bucket_name>/download-manifest")
+    def download_manifest(bucket_name: str) -> Response:
+        prefix = request.args.get("prefix", "").strip()
+        if prefix and not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+        paginator = s3_client.get_paginator("list_objects_v2")
+
+        try:
+            files: list[dict[str, str]] = []
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith("/"):
+                        continue
+
+                    relative_path = key[len(prefix) :] if prefix else key
+                    files.append({"key": key, "relative_path": relative_path})
+
+            folder_name = prefix.rstrip("/").rsplit("/", 1)[-1] if prefix else bucket_name
+            return jsonify({"files": files, "folder_name": folder_name, "prefix": prefix})
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    return jsonify({"error": "You do not have permission to download this folder."}), 403
+                case "NoSuchBucket":
+                    return jsonify({"error": "The specified bucket does not exist."}), 404
+                case _:
+                    return jsonify({"error": f"An unknown error occurred: {e}"}), 500
+
+    @app.route("/api/buckets/<bucket_name>/object-content")
+    def download_object_content(bucket_name: str) -> Response:
+        object_key = request.args.get("key", "").strip()
+        if not object_key:
+            return jsonify({"error": "Object key is missing."}), 400
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+
+        try:
+            s3_response = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+            response = Response(stream_with_context(s3_response["Body"].iter_chunks()))
+            response.call_on_close(s3_response["Body"].close)
+
+            content_type = s3_response.get("ContentType")
+            if content_type:
+                response.headers["Content-Type"] = content_type
+
+            content_length = s3_response.get("ContentLength")
+            if content_length is not None:
+                response.headers["Content-Length"] = str(content_length)
+
+            return response
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    return jsonify({"error": "You do not have permission to download this file."}), 403
+                case "NoSuchBucket" | "NoSuchKey":
+                    return jsonify({"error": "The requested object could not be found."}), 404
+                case _:
+                    return jsonify({"error": f"An unknown error occurred: {e}"}), 500
 
     @app.route("/buckets/<bucket_name>/delete-file", methods=["POST"])
     def delete_file(bucket_name: str) -> Response:
