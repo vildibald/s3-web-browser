@@ -78,10 +78,8 @@
         {% if item.type == "folder" %}
         <button
           type="button"
-          class="btn-small blue js-download-folder"
-          data-manifest-url="{{ url_for('download_manifest', bucket_name=bucket_name) }}"
-          data-content-url="{{ url_for('download_object_content', bucket_name=bucket_name) }}"
-          data-prefix="{{ item.name }}"
+          class="btn-small blue js-download-file"
+          data-download-url="{{ url_for('download_folder_zip', bucket_name=bucket_name, prefix=item.name) }}"
         >
           Download
         </button>
@@ -146,121 +144,9 @@
     });
     updateSelectAllState();
 
-    const showToast = (message, classes = 'grey darken-2') => {
-      M.toast({ html: message, classes, displayLength: 5000 });
-    };
-
-    const setButtonState = (button, isBusy, busyLabel = 'Downloading...') => {
-      if (!button.dataset.originalLabel) {
-        button.dataset.originalLabel = button.textContent.trim();
-      }
-
-      button.disabled = isBusy;
-      button.textContent = isBusy ? busyLabel : button.dataset.originalLabel;
-    };
-
-    const ensureDirectory = async (rootHandle, pathSegments) => {
-      let currentHandle = rootHandle;
-
-      for (const segment of pathSegments) {
-        currentHandle = await currentHandle.getDirectoryHandle(segment, { create: true });
-      }
-
-      return currentHandle;
-    };
-
-    const saveFile = async (rootHandle, relativePath, response) => {
-      const segments = relativePath.split('/').filter(Boolean);
-      const fileName = segments.pop();
-
-      if (!fileName) {
-        return;
-      }
-
-      const directoryHandle = await ensureDirectory(rootHandle, segments);
-      const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-      const writable = await fileHandle.createWritable();
-
-      try {
-        if (response.body) {
-          await response.body.pipeTo(writable);
-        } else {
-          await writable.write(await response.blob());
-          await writable.close();
-        }
-      } catch (error) {
-        try {
-          await writable.abort();
-        } catch (abortError) {
-          void abortError;
-        }
-        throw error;
-      }
-    };
-
     document.querySelectorAll('.js-download-file').forEach((button) => {
       button.addEventListener('click', () => {
         window.open(button.dataset.downloadUrl, '_blank', 'noopener');
-      });
-    });
-
-    const folderButtons = document.querySelectorAll('.js-download-folder');
-    const supportsDirectoryPicker = typeof window.showDirectoryPicker === 'function';
-
-    folderButtons.forEach((button) => {
-      if (!supportsDirectoryPicker) {
-        button.disabled = true;
-        button.title = 'Folder downloads require a browser with File System Access API support.';
-        return;
-      }
-
-      button.addEventListener('click', async () => {
-        setButtonState(button, true);
-
-        try {
-          const destinationRoot = await window.showDirectoryPicker({ mode: 'readwrite' });
-          const manifestResponse = await fetch(
-            `${button.dataset.manifestUrl}?prefix=${encodeURIComponent(button.dataset.prefix)}`
-          );
-
-          if (!manifestResponse.ok) {
-            const payload = await manifestResponse.json().catch(() => ({}));
-            throw new Error(payload.error || 'Unable to prepare folder download.');
-          }
-
-          const manifest = await manifestResponse.json();
-          if (!manifest.files.length) {
-            showToast('This folder does not contain any files.', 'blue darken-2');
-            return;
-          }
-
-          const folderRoot = manifest.folder_name
-            ? await destinationRoot.getDirectoryHandle(manifest.folder_name, { create: true })
-            : destinationRoot;
-
-          for (const file of manifest.files) {
-            const fileResponse = await fetch(
-              `${button.dataset.contentUrl}?key=${encodeURIComponent(file.key)}`
-            );
-
-            if (!fileResponse.ok) {
-              const payload = await fileResponse.json().catch(() => ({}));
-              throw new Error(payload.error || `Unable to download ${file.key}.`);
-            }
-
-            await saveFile(folderRoot, file.relative_path, fileResponse);
-          }
-
-          showToast(`Downloaded ${manifest.files.length} file(s).`, 'green darken-2');
-        } catch (error) {
-          if (error && error.name === 'AbortError') {
-            showToast('Folder download cancelled.', 'blue darken-2');
-          } else {
-            showToast(error.message || 'Folder download failed.', 'red darken-2');
-          }
-        } finally {
-          setButtonState(button, false);
-        }
       });
     });
   });

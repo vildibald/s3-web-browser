@@ -1,3 +1,9 @@
+import re
+import zipfile
+from collections.abc import Generator
+from datetime import datetime
+from urllib.parse import quote
+
 import boto3
 import botocore
 from flask import Flask, Response, flash, jsonify, redirect, render_template, request, stream_with_context, url_for
@@ -38,6 +44,81 @@ def collect_folder_keys(
             object_keys.extend(obj["Key"] for obj in page.get("Contents", []))
 
     return object_keys
+
+
+def normalize_folder_prefix(prefix: str) -> str:
+    prefix = prefix.strip()
+    if prefix and not prefix.endswith("/"):
+        return f"{prefix}/"
+
+    return prefix
+
+
+def archive_name_for_prefix(bucket_name: str, prefix: str) -> str:
+    folder_name = prefix.rstrip("/").rsplit("/", 1)[-1] if prefix else bucket_name
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", folder_name).strip("._")
+    return f"{safe_name or 'download'}.zip"
+
+
+def zip_member_name(key: str, prefix: str) -> str:
+    relative_path = key[len(prefix) :] if prefix else key
+    path_parts = [part for part in relative_path.split("/") if part and part not in {".", ".."}]
+    return "/".join(path_parts)
+
+
+class ZipStreamBuffer:
+    """Small file-like buffer for incremental ZIP response chunks."""
+
+    def __init__(self) -> None:
+        self._chunks: list[bytes] = []
+
+    def write(self, data: bytes) -> int:
+        self._chunks.append(bytes(data))
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def drain(self) -> Generator[bytes, None, None]:
+        while self._chunks:
+            yield self._chunks.pop(0)
+
+
+def iter_folder_zip(
+    s3_client: botocore.client.BaseClient,
+    bucket_name: str,
+    prefix: str,
+    object_keys: list[str],
+) -> Generator[bytes, None, None]:
+    buffer = ZipStreamBuffer()
+
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        for object_key in object_keys:
+            member_name = zip_member_name(object_key, prefix)
+            if not member_name:
+                continue
+
+            s3_response = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+            zip_info = zipfile.ZipInfo(member_name)
+            zip_info.compress_type = zipfile.ZIP_DEFLATED
+
+            last_modified = s3_response.get("LastModified")
+            if isinstance(last_modified, datetime):
+                zip_info.date_time = last_modified.timetuple()[:6]
+
+            body = s3_response["Body"]
+            try:
+                with archive.open(zip_info, "w") as archive_file:
+                    for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                        if chunk:
+                            archive_file.write(chunk)
+                            yield from buffer.drain()
+            finally:
+                body.close()
+
+            yield from buffer.drain()
+
+    yield from buffer.drain()
 
 
 def register_routes(app: Flask) -> None:  # noqa:C901
@@ -186,6 +267,43 @@ def register_routes(app: Flask) -> None:  # noqa:C901
                 case _:
                     return render_template("error.html", error=f"An unknown error occurred: {e}")
 
+    @app.route("/download/buckets/<bucket_name>/folder.zip")
+    def download_folder_zip(bucket_name: str) -> Response:
+        prefix = normalize_folder_prefix(request.args.get("prefix", ""))
+        if not prefix:
+            return render_template("error.html", error="Folder prefix is missing."), 400
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+
+        try:
+            object_keys = [
+                key for key in collect_folder_keys(s3_client, bucket_name, [prefix]) if not key.endswith("/")
+            ]
+            if not object_keys:
+                return render_template("error.html", error=f"No files found under folder: {prefix}"), 404
+
+            archive_name = archive_name_for_prefix(bucket_name, prefix)
+            disposition_name = quote(archive_name)
+            response = Response(
+                stream_with_context(iter_folder_zip(s3_client, bucket_name, prefix, object_keys)),
+                mimetype="application/zip",
+            )
+            response.headers["Content-Disposition"] = (
+                f"attachment; filename={archive_name}; filename*=UTF-8''{disposition_name}"
+            )
+            return response
+        except botocore.exceptions.ClientError as e:
+            match e.response["Error"]["Code"]:
+                case "AccessDenied":
+                    return (
+                        render_template("error.html", error="You do not have permission to download this folder."),
+                        403,
+                    )
+                case "NoSuchBucket":
+                    return render_template("error.html", error="The specified bucket does not exist."), 404
+                case _:
+                    return render_template("error.html", error=f"An unknown error occurred: {e}"), 500
+
     @app.route("/download/buckets/<bucket_name>/<path:path>")
     def download_file(bucket_name: str, path: str) -> Response:
         s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
@@ -198,9 +316,7 @@ def register_routes(app: Flask) -> None:  # noqa:C901
 
     @app.route("/api/buckets/<bucket_name>/download-manifest")
     def download_manifest(bucket_name: str) -> Response:
-        prefix = request.args.get("prefix", "").strip()
-        if prefix and not prefix.endswith("/"):
-            prefix = f"{prefix}/"
+        prefix = normalize_folder_prefix(request.args.get("prefix", ""))
 
         s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
         paginator = s3_client.get_paginator("list_objects_v2")
