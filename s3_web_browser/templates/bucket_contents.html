@@ -37,7 +37,8 @@
 
 <form id="delete-selected-form" method="post"
   action="{{ url_for('delete_selected', bucket_name=bucket_name) }}"
-  onsubmit="return confirmDeleteSelected(this);">
+  class="js-delete-form"
+  data-delete-kind="selected">
   <input type="hidden" name="current_path" value="{{ path }}">
 </form>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 16px 0;">
@@ -85,7 +86,9 @@
         </button>
         <form method="post" action="{{ url_for('delete_folder', bucket_name=bucket_name) }}"
           style="margin: 0;"
-          onsubmit="return confirm('Delete this folder and all of its contents?');">
+          class="js-delete-form"
+          data-delete-kind="folder"
+          data-delete-name="{{ item.name }}">
           <input type="hidden" name="prefix" value="{{ item.name }}">
           <input type="hidden" name="current_path" value="{{ path }}">
           <button type="submit" class="btn-small red">Delete</button>
@@ -99,7 +102,10 @@
           Download
         </button>
         <form method="post" action="{{ url_for('delete_file', bucket_name=bucket_name) }}"
-          style="margin: 0;" onsubmit="return confirm('Delete this file?');">
+          style="margin: 0;"
+          class="js-delete-form"
+          data-delete-kind="file"
+          data-delete-name="{{ item.name }}">
           <input type="hidden" name="key" value="{{ item.name }}">
           <input type="hidden" name="current_path" value="{{ path }}">
           <button type="submit" class="btn-small red">Delete</button>
@@ -110,10 +116,27 @@
   </li>
   {% endfor %}
 </ul>
+
+<div id="delete-confirm-modal" class="modal">
+  <div class="modal-content">
+    <h5>Confirm deletion</h5>
+    <p id="delete-confirm-message"></p>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="modal-close btn-flat">Cancel</button>
+    <button type="button" id="confirm-delete-button" class="btn red">Delete</button>
+  </div>
+</div>
+
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const selectAllItems = document.getElementById('select-all-items');
     const deleteItemCheckboxes = [...document.querySelectorAll('.delete-item-checkbox')];
+    const deleteConfirmModal = document.getElementById('delete-confirm-modal');
+    const deleteConfirmMessage = document.getElementById('delete-confirm-message');
+    const confirmDeleteButton = document.getElementById('confirm-delete-button');
+    const modalInstance = M.Modal.init(deleteConfirmModal);
+    let pendingDeleteForm = null;
 
     function updateSelectAllState() {
       const selectedCount = deleteItemCheckboxes.filter((checkbox) => checkbox.checked).length;
@@ -121,16 +144,6 @@
       selectAllItems.checked = selectedCount > 0 && selectedCount === deleteItemCheckboxes.length;
       selectAllItems.indeterminate = selectedCount > 0 && selectedCount < deleteItemCheckboxes.length;
     }
-
-    window.confirmDeleteSelected = () => {
-      const selectedCount = deleteItemCheckboxes.filter((checkbox) => checkbox.checked).length;
-      if (selectedCount === 0) {
-        M.toast({ html: 'Select at least one item to delete.', classes: 'blue darken-2' });
-        return false;
-      }
-
-      return confirm(`Delete ${selectedCount} selected item(s)? Folders include all contents.`);
-    };
 
     selectAllItems.addEventListener('change', () => {
       deleteItemCheckboxes.forEach((checkbox) => {
@@ -148,6 +161,45 @@
       button.addEventListener('click', () => {
         window.open(button.dataset.downloadUrl, '_blank', 'noopener');
       });
+    });
+
+    document.querySelectorAll('.js-delete-form').forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        if (form.dataset.confirmed === 'true') {
+          return;
+        }
+
+        event.preventDefault();
+
+        const selectedCount = deleteItemCheckboxes.filter((checkbox) => checkbox.checked).length;
+        const deleteKind = form.dataset.deleteKind;
+        const deleteName = form.dataset.deleteName;
+
+        if (deleteKind === 'selected' && selectedCount === 0) {
+          M.toast({ html: 'Select at least one item to delete.', classes: 'blue darken-2' });
+          return;
+        }
+
+        const messages = {
+          file: `Delete file "${deleteName}"?`,
+          folder: `Delete folder "${deleteName}" and all of its contents?`,
+          selected: `Delete ${selectedCount} selected item(s)? Folders include all contents.`
+        };
+
+        pendingDeleteForm = form;
+        deleteConfirmMessage.textContent = messages[deleteKind] || 'Delete this item?';
+        modalInstance.open();
+      });
+    });
+
+    confirmDeleteButton.addEventListener('click', () => {
+      if (!pendingDeleteForm) {
+        return;
+      }
+
+      pendingDeleteForm.dataset.confirmed = 'true';
+      modalInstance.close();
+      pendingDeleteForm.requestSubmit();
     });
   });
 </script>
