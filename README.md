@@ -23,6 +23,7 @@ S3 Web Browser is a Flask-based web application that allows users to browse AWS 
 - **Search Bucket Contents**: Search for files/folders in any S3 bucket, The search will be recursive from the point of origin.
 - **Generate Presigned URLs**: Securely generate temporary URLs for S3 objects, making them accessible for a limited time.
 - **Download Files or Folders**: Download individual objects directly, or download whole folders as ZIP files.
+- **Upload Files**: Upload one or more files to the current folder, replacing objects with the same name.
 
 ## Run
 
@@ -34,6 +35,9 @@ S3 Web Browser is a Flask-based web application that allows users to browse AWS 
 1. `docker build -t s3-browser .`
 1. `docker run -it --rm -p 8000:8000 --env-file .env s3-browser`
 1. Go to http://127.0.0.1:8000/ to browse through your files
+
+The configured AWS credentials need `s3:PutObject` permission to upload files.
+If the bucket requires server-side encryption, set `AWS_SERVER_SIDE_ENCRYPTION=AES256` in the environment file.
 
 > On macOS with Docker Desktop, `--network=host` does not expose the container the same way it does on Linux. Use `-p 8000:8000` instead.
 

@@ -54,6 +54,16 @@ def normalize_folder_prefix(prefix: str) -> str:
     return prefix
 
 
+def upload_filename(filename: str) -> str:
+    """Return a safe object-name component from a browser-supplied filename."""
+    name = re.split(r"[/\\]", filename)[-1].strip()
+    if not name or name in {".", ".."} or "\x00" in name:
+        message = "Uploaded file name is invalid."
+        raise ValueError(message)
+
+    return name
+
+
 def archive_name_for_prefix(bucket_name: str, prefix: str) -> str:
     folder_name = prefix.rstrip("/").rsplit("/", 1)[-1] if prefix else bucket_name
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", folder_name).strip("._")
@@ -313,6 +323,55 @@ def register_routes(app: Flask) -> None:  # noqa:C901
             ExpiresIn=3600,
         )  # URL expires in 1 hour
         return redirect(url)
+
+    @app.route("/buckets/<bucket_name>/upload", methods=["POST"])
+    def upload_files(bucket_name: str) -> Response:
+        current_path = normalize_folder_prefix(request.form.get("current_path", ""))
+        uploads = request.files.getlist("files")
+        valid_uploads = []
+
+        for uploaded_file in uploads:
+            try:
+                name = upload_filename(uploaded_file.filename or "")
+            except ValueError:
+                continue
+            valid_uploads.append((uploaded_file, name))
+
+        if not valid_uploads:
+            flash("Select at least one valid file to upload.", "error")
+            return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
+
+        s3_client = boto3.client("s3", **app.config["AWS_KWARGS"])
+        uploaded_count = 0
+        failures: list[str] = []
+        failure_codes: set[str] = set()
+
+        for uploaded_file, name in valid_uploads:
+            object_key = f"{current_path}{name}"
+            extra_args = {"ContentType": uploaded_file.content_type} if uploaded_file.content_type else {}
+            if encryption := app.config.get("AWS_SERVER_SIDE_ENCRYPTION"):
+                extra_args["ServerSideEncryption"] = encryption
+            try:
+                upload_kwargs = {"ExtraArgs": extra_args} if extra_args else {}
+                s3_client.upload_fileobj(uploaded_file.stream, bucket_name, object_key, **upload_kwargs)
+                uploaded_count += 1
+            except botocore.exceptions.ClientError as error:
+                failures.append(name)
+                failure_codes.add(error.response["Error"]["Code"])
+
+        if uploaded_count:
+            flash(f"Uploaded {uploaded_count} file(s) to {current_path or 'the bucket root'}.", "success")
+
+        if failures:
+            if failure_codes == {"AccessDenied"}:
+                message = "You do not have permission to upload one or more selected files."
+            elif failure_codes == {"NoSuchBucket"}:
+                message = "The specified bucket does not exist."
+            else:
+                message = f"Failed to upload {len(failures)} file(s): {', '.join(failures)}"
+            flash(message, "error")
+
+        return redirect(url_for("view_bucket", bucket_name=bucket_name, path=current_path))
 
     @app.route("/api/buckets/<bucket_name>/download-manifest")
     def download_manifest(bucket_name: str) -> Response:
